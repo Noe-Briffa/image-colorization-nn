@@ -1,44 +1,110 @@
 # Colorisation d'images par réseau de neurones
 
-Projet personnel de colorisation d'images noir et blanc. Un U-Net prédit les canaux chromatiques `a,b` dans l'espace Lab à partir du canal de luminance `L`.
+Projet personnel de colorisation d'images noir et blanc. Un U-Net léger avec attention CBAM reçoit le canal de luminance `L` et prédit les canaux chromatiques `a,b` dans l'espace Lab.
 
-## Ce que fait le projet
-
-- Prépare des images RGB sous forme de paires `L` / `ab`.
-- Entraîne un générateur U-Net avec attention CBAM.
-- Explore une perte adversariale via un discriminateur PatchGAN et une perte perceptuelle LPIPS.
-- Colorise des images depuis un dossier local.
-
-La colorisation est une prédiction plausible, non une restauration historique fiable. Les couleurs d'origine ne peuvent pas être déduites avec certitude depuis une image noir et blanc.
+> Les couleurs produites sont plausibles. Une image noir et blanc ne contient pas assez d'information pour garantir les couleurs historiques d'origine.
 
 ## Architecture
 
-`image RGB -> Lab -> L -> U-Net + CBAM -> ab -> Lab -> image colorisée`
-
-Le générateur emploie des convolutions depthwise-separable. Les données sont lues au format LMDB pour éviter de charger l'ensemble du jeu de données en mémoire.
-
-## Installation
-
-Python 3.10 ou 3.11 recommandé. Créer un environnement virtuel, installer une version de PyTorch compatible avec la carte graphique, puis :
-
-```bash
-pip install -r requirements.txt
+```mermaid
+flowchart LR
+    A[Image RGB ou N&B] --> B[Conversion Lab]
+    B --> C[Canal L]
+    C --> D[U-Net depthwise + CBAM]
+    D --> E[Canaux ab prédits]
+    C --> F[Recomposition Lab]
+    E --> F
+    F --> G[Image RGB colorisée]
 ```
 
-## Inférence
+Le dépôt contient aussi un discriminateur PatchGAN et une perte LPIPS. Le checkpoint portfolio `unet_colorization_119.pt` est un artefact historique entraîné avant la correction du chemin de gradient GAN/LPIPS. Il ne doit pas être présenté comme un modèle réentraîné avec cette correction.
 
-Placer des images dans un dossier, puis lancer :
+## Installation Windows
 
-```bash
-python YT/inference_colorize.py --input chemin/vers/images --output resultats --checkpoint checkpoints/unet_colorization_119.pt
+Pré-requis : pilote NVIDIA récent, `uv`, environ 5 Go libres pour l'environnement CUDA.
+
+```powershell
+uv python install 3.11
+uv venv .venv --python 3.11
+.\.venv\Scripts\Activate.ps1
+uv pip install -r requirements.txt
+python check_environment.py --checkpoint checkpoints\unet_colorization_119.pt
 ```
 
-Le checkpoint n'est pas inclus dans le dépôt. Il doit être téléchargé séparément depuis une release ou fourni localement.
+Pour reproduire exactement l'environnement validé, utiliser `requirements.lock.txt`
+à la place de `requirements.txt`.
 
-## Évaluation
+L'environnement validé utilise Python 3.11, PyTorch 2.7.0 et CUDA 12.8 sur une RTX 3060 Laptop 6 Go.
 
-Les métriques historiques présentes localement ont été calculées pendant entraînement. Elles ne constituent pas une évaluation indépendante. Une prochaine version fournira un protocole de validation séparé.
+## Checkpoint portfolio
 
-## Contenu volontairement exclu du dépôt
+Le modèle n'est pas stocké dans Git. La release [`v1.0.0-portfolio`](../../releases/tag/v1.0.0-portfolio) doit contenir uniquement :
 
-Jeux de données, checkpoints intermédiaires, sorties générées, vidéos et environnement local. Cela évite un dépôt de plusieurs dizaines de gigaoctets et respecte les licences des sources de données.
+```text
+unet_colorization_119.pt
+```
+
+Placer le fichier téléchargé dans `checkpoints/`.
+
+SHA-256 attendu : `1717d1f6fde0b0657ab0dbf451a13ebdb13d9828a20eac52654356febdb21fc3`.
+
+## Démo Gradio
+
+```powershell
+python app.py --checkpoint checkpoints\unet_colorization_119.pt
+```
+
+Ouvrir ensuite `http://127.0.0.1:7860`. L'interface permet de déposer une image, régler la saturation et comparer entrée/résultat.
+
+## Inférence en ligne de commande
+
+```powershell
+python YT\inference_colorize.py `
+  --input in_bw `
+  --output artifacts\inference `
+  --checkpoint checkpoints\unet_colorization_119.pt `
+  --device auto
+```
+
+Options principales : `--features 48`, `--max-size 1024`, `--saturation 1.2`, `--device auto|cuda|cpu`.
+
+## Évaluation indépendante
+
+Le protocole V1 sélectionne de façon déterministe 100 images du LMDB test avec la seed 42. Il exporte PSNR, SSIM, DeltaE, LPIPS, les indices évalués et six comparaisons.
+
+```powershell
+python evaluate.py `
+  --dataset dataset\dataset_lab_imagenet256_test.lmdb `
+  --checkpoint checkpoints\unet_colorization_119.pt `
+  --max-samples 100 `
+  --seed 42 `
+  --output artifacts\evaluation
+```
+
+Les anciens CSV sont des mesures prises pendant entraînement. Ils ne remplacent pas cette évaluation tenue à part.
+
+## Entraînement futur
+
+La V1 portfolio ne relance pas l'entraînement. La commande suivante prépare une V2 avec conversion Lab→RGB différentiable, checkpoints complets et reprise explicite :
+
+```powershell
+python main.py `
+  --dataset dataset\dataset_lab_imagenet256.lmdb `
+  --test-dataset dataset\dataset_lab_imagenet256_test.lmdb `
+  --epochs 130 `
+  --batch-size 16 `
+  --device cuda
+```
+
+Pour reprendre : ajouter `--resume checkpoints\unet_colorization_42.pt`.
+
+## Données et publication
+
+Datasets ImageNet, LMDB, checkpoints intermédiaires, environnements, sorties et vidéos restent hors Git. Les six comparaisons générées dans `artifacts/evaluation/` doivent être contrôlées avant publication ; seules les images dont les droits de diffusion sont établis peuvent être copiées dans les visuels portfolio.
+
+## Tests
+
+```powershell
+python -m pytest -q
+python -m py_compile main.py app.py evaluate.py check_environment.py unet_learning.py YT\inference_colorize.py
+```
