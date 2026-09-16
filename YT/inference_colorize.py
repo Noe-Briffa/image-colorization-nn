@@ -1,5 +1,7 @@
+import argparse
 import os
 import re
+import sys
 from pathlib import Path
 from PIL import Image
 
@@ -8,21 +10,12 @@ import torch
 import torch.nn.functional as F
 import kornia.color as K
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from unet_learning import UNet, lab01_to_rgb01_fast
 
-
-# =========================
-# CONFIG À MODIFIER ICI
-# =========================
-INPUT_DIR = "../output"  # dossier contenant tes images
-OUTPUT_DIR = "../output_colorise"  # dossier de sortie
-
-CHECKPOINT_DIR = "../checkpoints"
-CHECKPOINT_BASENAME = "unet_colorization"  # ex: unet_colorization_119.pt
-
-FEATURES = 48
-MAX_SIZE = 1024
-BOOST_SATURATION = 1.2  # 1.0 = off
 
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
@@ -122,17 +115,35 @@ def colorize_image(
     return Image.fromarray(rgb_u8, mode="RGB")
 
 
-def main():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Colorise un dossier d'images avec un checkpoint U-Net.")
+    parser.add_argument("--input", type=Path, required=True, help="Dossier d'images à coloriser.")
+    parser.add_argument("--output", type=Path, required=True, help="Dossier de sortie.")
+    parser.add_argument("--checkpoint", type=Path, help="Checkpoint .pt à utiliser.")
+    parser.add_argument("--checkpoint-dir", type=Path, default=PROJECT_ROOT / "checkpoints")
+    parser.add_argument("--features", type=int, default=48, help="Largeur de base du U-Net.")
+    parser.add_argument("--max-size", type=int, default=1024, help="Plus grand côté en pixels.")
+    parser.add_argument("--saturation", type=float, default=1.2, help="Facteur de saturation, 1.0 désactive.")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    if args.device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA demandé, mais aucune carte CUDA n'est disponible.")
+    device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else args.device)
     print(f"Device: {device}")
 
-    ckpt_path = find_latest_checkpoint(CHECKPOINT_DIR, CHECKPOINT_BASENAME)
+    ckpt_path = str(args.checkpoint) if args.checkpoint else find_latest_checkpoint(
+        str(args.checkpoint_dir), "unet_colorization"
+    )
     print(f"✅ Dernier checkpoint: {ckpt_path}")
 
-    G = load_generator(ckpt_path, FEATURES, device)
+    G = load_generator(ckpt_path, args.features, device)
 
-    in_dir = Path(INPUT_DIR)
-    out_dir = Path(OUTPUT_DIR)
+    in_dir = args.input
+    out_dir = args.output
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if not in_dir.exists() or not in_dir.is_dir():
@@ -147,7 +158,7 @@ def main():
     for i, img_path in enumerate(files, start=1):
         try:
             with Image.open(img_path) as img:
-                out_img = colorize_image(G, img, device, MAX_SIZE, BOOST_SATURATION)
+                out_img = colorize_image(G, img, device, args.max_size, args.saturation)
 
             out_path = out_dir / img_path.name
             out_img.save(out_path)
@@ -161,4 +172,5 @@ def main():
     print(f"\nTerminé: {ok} ok, {fail} échecs. Sortie: {out_dir.resolve()}")
 
 
-main()
+if __name__ == "__main__":
+    main()

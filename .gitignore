@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Data and trained artifacts (never commit)
+dataset/
+checkpoints/
+*.lmdb
+*.pt
+*.parquet
+
+# Generated previews, logs, videos and local inputs
+output/
+output_colorise/
+output_colorise_all/
+montage_grid/
+samples/
+YT/graphs_png/
+in_bw/
+*.csv
+*.mp4
+test_images.pt
+
+# Local tooling
+.gitnexus/
+.claude/
+CLAUDE.md
+AGENTS.md
