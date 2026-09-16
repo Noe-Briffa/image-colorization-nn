@@ -38,7 +38,7 @@ L'environnement validé utilise Python 3.11, PyTorch 2.7.0 et CUDA 12.8 sur une 
 
 ## Checkpoint portfolio
 
-Le modèle n'est pas stocké dans Git. La release [`v1.0.0-portfolio`](../../releases/tag/v1.0.0-portfolio) doit contenir uniquement :
+Le modèle n'est pas stocké dans Git. La release [`v1.0.0-portfolio`](https://github.com/Noe-Briffa/image-colorization-nn/releases/tag/v1.0.0-portfolio) contient uniquement l'artefact à télécharger :
 
 ```text
 unet_colorization_119.pt
@@ -82,6 +82,10 @@ python evaluate.py `
 ```
 
 Les anciens CSV sont des mesures prises pendant entraînement. Ils ne remplacent pas cette évaluation tenue à part.
+
+## Visuels portfolio
+
+La sélection de comparaisons entrée / prédiction / référence est disponible dans [`docs/PORTFOLIO_ASSETS.md`](docs/PORTFOLIO_ASSETS.md).
 
 ## Entraînement futur
 
