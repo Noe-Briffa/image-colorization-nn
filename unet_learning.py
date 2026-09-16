@@ -14,8 +14,12 @@ import kornia
 import kornia.color as K
 from tqdm import tqdm
 import csv
+import random
 from math import log10
+from pathlib import Path
 import time
+
+import numpy as np
 
 # ==========================
 # Perf : optimisation des kernels
@@ -353,6 +357,12 @@ def lab01_to_rgb01_fast(L01: torch.Tensor, ab01: torch.Tensor) -> torch.Tensor:
     return torch.clamp(rgb, 0.0, 1.0)
 
 
+def lab01_to_rgb01_differentiable(L01: torch.Tensor, ab01: torch.Tensor) -> torch.Tensor:
+    """Conversion Lab normalisé vers RGB qui conserve le graphe autograd."""
+    lab = torch.cat([L01 * 100.0, ab01 * 255.0 - 128.0], dim=1)
+    return K.lab_to_rgb(lab, clip=True)
+
+
 @torch.no_grad()
 def colorize_L_batch(model: UNet, L01: torch.Tensor) -> torch.Tensor:
     """
@@ -442,7 +452,9 @@ class LazyLabDatasetLMDB(Dataset):
         # Décode ab
         ab_bytes, ab_shape, ab_dtype = record["ab"]
         ab_np = np.frombuffer(ab_bytes, dtype=ab_dtype).reshape(ab_shape)
-        ab = torch.from_numpy(ab_np).float()
+        # LMDB fournit une vue en lecture seule ; copier avant conversion évite
+        # l'avertissement NumPy/PyTorch et garantit un tenseur sûr à manipuler.
+        ab = torch.from_numpy(ab_np.copy()).float()
 
         return L, ab
 
@@ -559,7 +571,11 @@ def train(
         features: int = 64,
         subset_size: int = -1,
         samples_dir: str = "samples",
-        ckpt_path: str = "checkpoints/unet_colorization.pt"
+        ckpt_path: str = "checkpoints/unet_colorization.pt",
+        metrics_path: str = "checkpoints/full_metrics.csv",
+        device_name: str = "auto",
+        seed: int = 42,
+        resume_path: str | None = None,
 ):
     """
     Lance l'entraînement du U-Net:
@@ -573,30 +589,52 @@ def train(
     - samples_dir : où sauver les aperçus RGB
     - ckpt_path   : où sauver le modèle
     """
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device_name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA demandé, mais aucune carte CUDA n'est disponible.")
+    device = torch.device(
+        "cuda" if device_name == "auto" and torch.cuda.is_available() else
+        "cpu" if device_name == "auto" else device_name
+    )
+    use_amp = device.type == "cuda"
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if use_amp:
+        torch.cuda.manual_seed_all(seed)
 
     # === Dataset ===
-    os.makedirs("checkpoints", exist_ok=True)
+    Path(ckpt_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(metrics_path).parent.mkdir(parents=True, exist_ok=True)
     os.makedirs(samples_dir, exist_ok=True)
 
     print("🧩 Chargement du dataset en mode Lazy (un chunk à la fois)...")
     dataset = LazyLabDatasetLMDB(dataset_dir)
     dataset_test = LazyLabDatasetLMDB(dataset_dir_test)
 
-    if subset_size != -1: dataset, _ = random_split(dataset, [subset_size, len(dataset) - subset_size])
+    if subset_size != -1:
+        if subset_size <= 0 or subset_size > len(dataset):
+            raise ValueError("subset_size doit être compris entre 1 et la taille du dataset.")
+        generator = torch.Generator().manual_seed(seed)
+        dataset, _ = random_split(
+            dataset,
+            [subset_size, len(dataset) - subset_size],
+            generator=generator,
+        )
 
     # Lazy loading -> un seul worker pour éviter les collisions de torch.load
+    loader_generator = torch.Generator().manual_seed(seed)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=True,
+        generator=loader_generator,
         num_workers=0,
         pin_memory=True,
         persistent_workers=False,
         prefetch_factor=None
     )
 
-    L_fixed, ab_fixed = next(iter(DataLoader(dataset_test, batch_size=32, shuffle=True, num_workers=0)))
+    L_fixed, ab_fixed = next(iter(DataLoader(dataset_test, batch_size=32, shuffle=False, num_workers=0)))
     L_fixed, ab_fixed = L_fixed.to(device), ab_fixed.to(device)
 
     # === Modèles ===
@@ -615,28 +653,45 @@ def train(
     for p in lpips_loss.parameters():
         p.requires_grad = False
 
-    # === Reprise checkpoint si dispo ===
+    # === Fonctions de perte et optim ===
+    criterion_GAN = nn.BCEWithLogitsLoss()
+    criterion_L1 = nn.L1Loss()
+    opt_G = torch.optim.Adam(G.parameters(), lr=LR_G, betas=(0.5, 0.999))
+    opt_D = torch.optim.Adam(D.parameters(), lr=LR_D, betas=(0.5, 0.999))
+    scaler_G = amp.GradScaler("cuda", enabled=use_amp)
+    scaler_D = amp.GradScaler("cuda", enabled=use_amp)
+
+    # === Reprise explicite ===
     start_epoch = 1
-    ckpt_dir = os.path.dirname(ckpt_path)
-    base_name = os.path.splitext(os.path.basename(ckpt_path))[0]
+    if resume_path is not None:
+        resume_file = Path(resume_path)
+        if not resume_file.is_file():
+            raise FileNotFoundError(f"Checkpoint de reprise introuvable: {resume_file}")
+        print(f"🔄 Reprise à partir du checkpoint {resume_file}")
+        checkpoint = torch.load(resume_file, map_location=device)
+        if not isinstance(checkpoint, dict) or "G" not in checkpoint or "D" not in checkpoint:
+            raise ValueError("Checkpoint de reprise incompatible: clés G/D absentes.")
+        G.load_state_dict(checkpoint["G"], strict=True)
+        D.load_state_dict(checkpoint["D"], strict=True)
 
-    existing_ckpts = [f for f in os.listdir(ckpt_dir) if
-                      f.startswith(base_name.replace(".pt", "")) and f.endswith(".pt")]
-    if existing_ckpts:
-        # récupérer le plus grand numéro d'epoch
-        latest = sorted(existing_ckpts, key=lambda x: int(x.split("_")[-1].split(".")[0]))[-1]
-        ckpt_full_path = os.path.join(ckpt_dir, latest)
-        print(f"🔄 Reprise à partir du checkpoint {ckpt_full_path}")
-        checkpoint = torch.load(ckpt_full_path, map_location=device)
-
-        # Chargement tolérant pour compatibilité ancienne version
-        missing, unexpected = G.load_state_dict(checkpoint["G"], strict=False)
-        print(f"ℹ️ G chargé avec {len(missing)} clés manquantes et {len(unexpected)} inattendues.")
-        D.load_state_dict(checkpoint["D"], strict=False)
-
-        start_epoch = checkpoint.get("epoch", 0) + 1
+        full_state = all(key in checkpoint for key in ("opt_G", "opt_D", "scaler_G", "scaler_D"))
+        if full_state:
+            opt_G.load_state_dict(checkpoint["opt_G"])
+            opt_D.load_state_dict(checkpoint["opt_D"])
+            scaler_G.load_state_dict(checkpoint["scaler_G"])
+            scaler_D.load_state_dict(checkpoint["scaler_D"])
+            if "torch_rng_state" in checkpoint:
+                torch.set_rng_state(checkpoint["torch_rng_state"].cpu())
+            if use_amp and checkpoint.get("cuda_rng_state") is not None:
+                torch.cuda.set_rng_state_all(checkpoint["cuda_rng_state"])
+            if "data_loader_rng_state" in checkpoint:
+                loader_generator.set_state(checkpoint["data_loader_rng_state"].cpu())
+            print("Modeles, optimiseurs et scalers restaures.")
+        else:
+            print("Ancien checkpoint: poids restaures, optimiseurs et scalers reinitialises.")
+        start_epoch = int(checkpoint.get("epoch", 0)) + 1
     else:
-        print("🚀 Aucun checkpoint trouvé, nouvel entraînement.")
+        print("Nouvel entrainement (aucune reprise demandee).")
 
     G.eval()
     with torch.no_grad():
@@ -646,18 +701,10 @@ def train(
             os.path.join(samples_dir, "epoch0_reference_lab.png"),
             nrow=8
         )
-    print("✅ Images de référence sauvegardées (L + ab réels)")
+    print("Images de reference sauvegardees (L + ab reels)")
     G.train()
 
-    # === Fonctions de perte et optim ===
-    criterion_GAN = nn.BCEWithLogitsLoss()
-    criterion_L1 = nn.L1Loss()
-    opt_G = torch.optim.Adam(G.parameters(), lr=LR_G, betas=(0.5, 0.999))
-    opt_D = torch.optim.Adam(D.parameters(), lr=LR_D, betas=(0.5, 0.999))
-    scaler_G = amp.GradScaler('cuda')
-    scaler_D = amp.GradScaler('cuda')
-
-    logger = TrainingLogger("checkpoints/full_metrics.csv")
+    logger = TrainingLogger(metrics_path)
 
     # warm-up GPU
     with torch.no_grad():
@@ -666,15 +713,18 @@ def train(
         _ = G(dummy_L)
         rgb_dummy = lab01_to_rgb01_fast(dummy_L, (dummy_ab + 1) / 2)
         _ = D(torch.cat([dummy_L, rgb_dummy], dim=1))
-    torch.cuda.synchronize()
+    if use_amp:
+        torch.cuda.synchronize()
 
-    print("🚀 Début de l’entraînement CGAN pour colorisation…")
+    print("Debut de l entrainement CGAN pour colorisation...")
 
     # === Boucle d'entraînement ===
     for epoch in range(start_epoch, epochs + 1):
         if epoch == epoch_ft:
-            opt_G = torch.optim.Adam(G.parameters(), lr=LR_G_FT, betas=(0.5, 0.999))
-            opt_D = torch.optim.Adam(D.parameters(), lr=LR_D_FT, betas=(0.5, 0.999))
+            for parameter_group in opt_G.param_groups:
+                parameter_group["lr"] = LR_G_FT
+            for parameter_group in opt_D.param_groups:
+                parameter_group["lr"] = LR_D_FT
         G.train()
         D.train()
         pbar = tqdm(loader, desc=f"Epoch {epoch}/{epochs}", leave=False)
@@ -689,12 +739,12 @@ def train(
             t_data = time.time() - t_data_start
 
             # Mesure GPU avant
-            gpu_alloc = torch.cuda.memory_allocated() / 1e6
-            gpu_reserved = torch.cuda.memory_reserved() / 1e6
+            gpu_alloc = torch.cuda.memory_allocated() / 1e6 if use_amp else 0.0
+            gpu_reserved = torch.cuda.memory_reserved() / 1e6 if use_amp else 0.0
 
             # === 1️⃣ Génération ===
             t_fG_start = time.time()
-            with amp.autocast(device_type='cuda'):
+            with amp.autocast(device_type=device.type, enabled=use_amp):
                 ab_fake = G(L)  # tanh → [-1,1]
 
             t_fG = time.time() - t_fG_start
@@ -710,7 +760,7 @@ def train(
 
             rgb_fake_256_for_D = rgb_fake_256_ng.detach()
 
-            with amp.autocast(device_type='cuda'):
+            with amp.autocast(device_type=device.type, enabled=use_amp):
                 D_real = D(torch.cat([L, rgb_real_256], dim=1))
                 D_fake = D(torch.cat([L, rgb_fake_256_for_D.detach()], dim=1))
 
@@ -727,30 +777,22 @@ def train(
             t_bD = time.time() - t_bD_start
 
             # === 3️⃣ Entraînement du Générateur ===
+            for parameter in D.parameters():
+                parameter.requires_grad_(False)
             t_fG2_start = time.time()
+            # Downsample différentiable pour LPIPS.
+            L_128 = F.interpolate(L, size=(128, 128), mode="bilinear", align_corners=False)
+            ab_fake_128 = F.interpolate((ab_fake + 1) / 2, size=(128, 128),
+                                        mode="bilinear", align_corners=False)
+            rgb_fake_128 = lab01_to_rgb01_differentiable(L_128, ab_fake_128)
+            rgb_fake_256 = lab01_to_rgb01_differentiable(L, (ab_fake + 1) / 2)
+
             with torch.no_grad():
-                # Downsample Lab en 128
-                L_128 = F.interpolate(L, size=(128, 128), mode="bilinear", align_corners=False)
-                ab_fake_128 = F.interpolate((ab_fake + 1) / 2, size=(128, 128),
-                                            mode="bilinear", align_corners=False)
                 ab_real_128 = F.interpolate(ab, size=(128, 128),
                                             mode="bilinear", align_corners=False)
+                rgb_real_128 = lab01_to_rgb01_fast(L_128, ab_real_128)
 
-                # Lab(0..1) -> RGB(0..1) en 128×128
-                rgb_fake_128_ng = lab01_to_rgb01_fast(L_128, ab_fake_128)
-                rgb_real_128_ng = lab01_to_rgb01_fast(L_128, ab_real_128)
-
-            # Bridge de gradient 128×128 (STE pour LPIPS)
-            grad_bridge_128 = ab_fake_128[:, :1, :, :].expand_as(rgb_fake_128_ng)
-            rgb_fake_128 = rgb_fake_128_ng + (grad_bridge_128 - grad_bridge_128.detach()) * 0
-            rgb_real_128 = rgb_real_128_ng
-
-            # -------- 3.2 RGB 256 pour GAN (avec STE léger) --------
-            # On peut aussi faire un petit bridge 256 pour que le GAN voie rgb comme fonction de ab_fake
-            grad_bridge_256 = ab_fake[:, :1, :, :].expand_as(rgb_fake_256_ng)
-            rgb_fake_256 = rgb_fake_256_ng + (grad_bridge_256 - grad_bridge_256.detach()) * 0
-
-            with amp.autocast(device_type="cuda"):
+            with amp.autocast(device_type=device.type, enabled=use_amp):
                 # --- GAN : le Générateur veut tromper D en 256×256 ---
                 D_fake_for_G = D(torch.cat([L, rgb_fake_256], dim=1))
                 loss_G_GAN = criterion_GAN(D_fake_for_G, torch.ones_like(D_fake_for_G))
@@ -787,6 +829,8 @@ def train(
             scaler_G.scale(loss_G).backward()
             scaler_G.step(opt_G)
             scaler_G.update()
+            for parameter in D.parameters():
+                parameter.requires_grad_(True)
             t_bG = time.time() - t_bG_start
 
             # === METRICS ===
@@ -853,7 +897,26 @@ def train(
         torch.save({
             "G": G.state_dict(),
             "D": D.state_dict(),
-            "epoch": epoch
+            "opt_G": opt_G.state_dict(),
+            "opt_D": opt_D.state_dict(),
+            "scaler_G": scaler_G.state_dict(),
+            "scaler_D": scaler_D.state_dict(),
+            "epoch": epoch,
+            "config": {
+                "batch_size": batch_size,
+                "epochs": epochs,
+                "lr_g": LR_G,
+                "lr_d": LR_D,
+                "lr_g_finetune": LR_G_FT,
+                "lr_d_finetune": LR_D_FT,
+                "finetune_epoch": epoch_ft,
+                "features": features,
+                "seed": seed,
+                "gradient_path": "kornia-lab-to-rgb-v2",
+            },
+            "torch_rng_state": torch.get_rng_state(),
+            "cuda_rng_state": torch.cuda.get_rng_state_all() if use_amp else None,
+            "data_loader_rng_state": loader_generator.get_state(),
         }, ckpt_path.replace(".pt", f"_{epoch}.pt"))
 
-    print("✅ Entraînement terminé avec succès !")
+    print("Entrainement termine avec succes !")

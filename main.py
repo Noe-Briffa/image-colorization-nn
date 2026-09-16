@@ -1,64 +1,86 @@
-import os
+import argparse
 import time
+from pathlib import Path
 
-import torch
-from torch.utils.data import TensorDataset, DataLoader
-
-from dataset_functions import create_dataset, load_all_chunks
 from unet_learning import train
 
-if __name__ == "__main__":
-    # Variables
-    DATA_DIR = 'imagenet-mini_train'
-    DATASET_DIR = 'dataset/dataset_lab_imagenet256.lmdb'
-    DATASET_DIR_TEST = 'dataset/dataset_lab_imagenet256_test.lmdb'
-    DATASET_NAME = 'dataset_lab'
-    CHUNK_SIZE_MB = 120
-    IMAGE_SIZE = (256, 256)
-    BATCH_SIZE = 16
-    NUM_WORKERS = 4
-    EPOCHS = 130
-    LR_G = 2e-4
-    LR_D = 1e-4
-    LR_G_FT = 1e-5  # fine-tune
-    LR_D_FT = 5e-6  # fine-tune
-    EPOCH_FT = 101  # epoch fine-tune
-    SUBSET_SIZE = -1
-    FEATURES = 48
-    SAMPLES_DIR = "samples"
-    CKPT = "checkpoints/unet_colorization.pt"
 
-    if not os.path.exists(DATASET_DIR): os.makedirs(DATASET_DIR)
+PROJECT_ROOT = Path(__file__).resolve().parent
 
-    # Création du dataset
-    # create_dataset(folder_path=DATA_DIR,
-    #                dataset_folder=DATASET_DIR,
-    #                dataset_name=DATASET_NAME,
-    #                chunk_size_mb=CHUNK_SIZE_MB,
-    #                image_size=IMAGE_SIZE)
 
-    # dataset = load_all_chunks(folder_path=DATASET_DIR)
-    # dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, num_workers=NUM_WORKERS, shuffle=True)
+def resolve_project_path(path: Path) -> Path:
+    """Interprète les chemins relatifs depuis la racine du dépôt."""
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
-    t0 = time.time()
-    print("training started.")
 
-    # Lancement entraînement
-    train(
-        dataset_dir=DATASET_DIR,
-        dataset_dir_test=DATASET_DIR_TEST,
-        batch_size=BATCH_SIZE,
-        epochs=EPOCHS,
-        LR_G=LR_G,
-        LR_D=LR_D,
-        LR_G_FT=LR_G_FT,
-        LR_D_FT=LR_D_FT,
-        epoch_ft=EPOCH_FT,
-        num_workers=NUM_WORKERS,
-        features=FEATURES,
-        subset_size=SUBSET_SIZE,
-        samples_dir=SAMPLES_DIR,
-        ckpt_path=CKPT,
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Entraîne le modèle de colorisation U-Net/cGAN.")
+    parser.add_argument("--dataset", type=Path, required=True, help="LMDB d'entraînement.")
+    parser.add_argument("--test-dataset", type=Path, required=True, help="LMDB tenu à part.")
+    parser.add_argument("--epochs", type=int, default=130)
+    parser.add_argument("--batch-size", type=int, default=16)
+    parser.add_argument("--features", type=int, default=48)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument("--subset-size", type=int, default=-1)
+    parser.add_argument("--lr-g", type=float, default=2e-4)
+    parser.add_argument("--lr-d", type=float, default=1e-4)
+    parser.add_argument("--lr-g-finetune", type=float, default=1e-5)
+    parser.add_argument("--lr-d-finetune", type=float, default=5e-6)
+    parser.add_argument("--finetune-epoch", type=int, default=101)
+    parser.add_argument(
+        "--checkpoint-base",
+        type=Path,
+        default=PROJECT_ROOT / "checkpoints" / "unet_colorization.pt",
     )
+    parser.add_argument("--resume", type=Path, help="Checkpoint précis à reprendre.")
+    parser.add_argument("--samples-dir", type=Path, default=PROJECT_ROOT / "samples")
+    parser.add_argument(
+        "--metrics",
+        type=Path,
+        default=PROJECT_ROOT / "checkpoints" / "full_metrics.csv",
+    )
+    return parser.parse_args()
 
-    print(f"training time: {round(time.time() - t0)}s.")
+
+def validate_args(args: argparse.Namespace) -> None:
+    for label, path in (("dataset", args.dataset), ("test-dataset", args.test_dataset)):
+        if not path.is_file():
+            raise FileNotFoundError(f"{label} LMDB introuvable: {path}")
+    if args.epochs <= 0 or args.batch_size <= 0 or args.features <= 0:
+        raise ValueError("epochs, batch-size et features doivent être supérieurs à zéro.")
+
+
+def main() -> None:
+    args = parse_args()
+    for name in ("dataset", "test_dataset", "checkpoint_base", "samples_dir", "metrics", "resume"):
+        value = getattr(args, name)
+        if value is not None:
+            setattr(args, name, resolve_project_path(value))
+    validate_args(args)
+    started_at = time.time()
+    train(
+        dataset_dir=str(args.dataset),
+        dataset_dir_test=str(args.test_dataset),
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        LR_G=args.lr_g,
+        LR_D=args.lr_d,
+        LR_G_FT=args.lr_g_finetune,
+        LR_D_FT=args.lr_d_finetune,
+        epoch_ft=args.finetune_epoch,
+        num_workers=0,
+        features=args.features,
+        subset_size=args.subset_size,
+        samples_dir=str(args.samples_dir),
+        ckpt_path=str(args.checkpoint_base),
+        metrics_path=str(args.metrics),
+        device_name=args.device,
+        seed=args.seed,
+        resume_path=str(args.resume) if args.resume else None,
+    )
+    print(f"Entraînement terminé en {round(time.time() - started_at)} s.")
+
+
+if __name__ == "__main__":
+    main()
