@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+.cache/
 
 # Data and trained artifacts (never commit)
 dataset/
@@ -22,6 +23,7 @@ in_bw/
 *.csv
 *.mp4
 test_images.pt
+artifacts/
 
 # Local tooling
 .gitnexus/
