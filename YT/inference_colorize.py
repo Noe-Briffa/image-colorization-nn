@@ -20,6 +20,11 @@ from unet_learning import UNet, lab01_to_rgb01_fast
 EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 
+def resolve_project_path(path: str | Path) -> Path:
+    path = Path(path).expanduser()
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
+
 def find_latest_checkpoint(ckpt_dir: str, base_name: str) -> str:
     if not os.path.isdir(ckpt_dir):
         raise FileNotFoundError(f"Dossier checkpoints introuvable: {ckpt_dir}")
@@ -40,14 +45,31 @@ def find_latest_checkpoint(ckpt_dir: str, base_name: str) -> str:
     return candidates[-1][1]
 
 
-def load_generator(checkpoint_path: str, features: int, device: torch.device) -> UNet:
+def resolve_device(device_name: str) -> torch.device:
+    if device_name == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA demandé, mais aucune carte CUDA n'est disponible.")
+    if device_name == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device_name)
+
+
+def load_generator(checkpoint_path: str | Path, features: int, device: torch.device) -> UNet:
+    checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(f"Checkpoint introuvable: {checkpoint_path}")
+
     ckpt = torch.load(checkpoint_path, map_location=device)
+    if not isinstance(ckpt, dict) or "G" not in ckpt:
+        raise ValueError("Checkpoint incompatible: clé 'G' absente.")
 
     G = UNet(in_channels=1, out_channels=2, features=features).to(device=device)
-    missing, unexpected = G.load_state_dict(ckpt["G"], strict=False)
-
-    if missing or unexpected:
-        print(f"[WARN] load_state_dict: missing={len(missing)} unexpected={len(unexpected)}")
+    try:
+        G.load_state_dict(ckpt["G"], strict=True)
+    except RuntimeError as exc:
+        raise ValueError(
+            "Checkpoint incompatible avec cette architecture. "
+            f"Vérifie --features (valeur actuelle: {features})."
+        ) from exc
 
     G.eval()
     return G
@@ -112,7 +134,7 @@ def colorize_image(
 
     # tensor -> PIL
     rgb_u8 = (rgb01[0].permute(1, 2, 0) * 255.0).round().byte().cpu().numpy()
-    return Image.fromarray(rgb_u8, mode="RGB")
+    return Image.fromarray(rgb_u8)
 
 
 def parse_args() -> argparse.Namespace:
@@ -130,15 +152,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    if args.device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA demandé, mais aucune carte CUDA n'est disponible.")
-    device = torch.device("cuda" if args.device == "auto" and torch.cuda.is_available() else args.device)
+    args.input = resolve_project_path(args.input)
+    args.output = resolve_project_path(args.output)
+    args.checkpoint_dir = resolve_project_path(args.checkpoint_dir)
+    if args.checkpoint is not None:
+        args.checkpoint = resolve_project_path(args.checkpoint)
+    device = resolve_device(args.device)
     print(f"Device: {device}")
 
     ckpt_path = str(args.checkpoint) if args.checkpoint else find_latest_checkpoint(
         str(args.checkpoint_dir), "unet_colorization"
     )
-    print(f"✅ Dernier checkpoint: {ckpt_path}")
+    print(f"Checkpoint: {ckpt_path}")
 
     G = load_generator(ckpt_path, args.features, device)
 
@@ -151,7 +176,7 @@ def main() -> None:
 
     files = [p for p in in_dir.iterdir() if p.is_file() and p.suffix.lower() in EXTS]
     if not files:
-        print(f"⚠️ Aucune image trouvée dans {in_dir.resolve()} (ext: {sorted(EXTS)})")
+        print(f"Aucune image trouvee dans {in_dir.resolve()} (ext: {sorted(EXTS)})")
         return
 
     ok, fail = 0, 0
@@ -164,10 +189,10 @@ def main() -> None:
             out_img.save(out_path)
 
             ok += 1
-            print(f"[{i}/{len(files)}] ✅ {img_path.name} -> {out_path}")
+            print(f"[{i}/{len(files)}] OK {img_path.name} -> {out_path}")
         except Exception as e:
             fail += 1
-            print(f"[{i}/{len(files)}] ❌ {img_path.name} | {type(e).__name__}: {e}")
+            print(f"[{i}/{len(files)}] ERREUR {img_path.name} | {type(e).__name__}: {e}")
 
     print(f"\nTerminé: {ok} ok, {fail} échecs. Sortie: {out_dir.resolve()}")
 
