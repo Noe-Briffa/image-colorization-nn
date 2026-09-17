@@ -4,7 +4,7 @@
   "meta": {
     "title": "Pipeline de colorisation",
     "output": "docs/assets/architecture.html",
-    "viewBox": [1180, 680],
+    "viewBox": [1180, 500],
     "quality_profile": "showcase"
   },
   "stages": [
