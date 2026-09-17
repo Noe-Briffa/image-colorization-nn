@@ -6,16 +6,9 @@ Projet personnel de colorisation d'images noir et blanc. Un U-Net léger avec at
 
 ## Architecture
 
-```mermaid
-flowchart LR
-    A[Image RGB ou N&B] --> B[Conversion Lab]
-    B --> C[Canal L]
-    C --> D[U-Net depthwise + CBAM]
-    D --> E[Canaux ab prédits]
-    C --> F[Recomposition Lab]
-    E --> F
-    F --> G[Image RGB colorisée]
-```
+![Pipeline de colorisation](docs/assets/architecture.svg)
+
+Le modèle travaille dans l’espace CIELAB. Il reçoit la luminance `L`, prédit les canaux chromatiques `a,b`, puis recombine ces informations pour produire une image RGB.
 
 Le dépôt contient aussi un discriminateur PatchGAN et une perte LPIPS. Le checkpoint portfolio `unet_colorization_119.pt` est un artefact historique entraîné avant la correction du chemin de gradient GAN/LPIPS. Il ne doit pas être présenté comme un modèle réentraîné avec cette correction.
 

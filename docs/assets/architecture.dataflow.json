@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "Pipeline de colorisation",
+    "output": "docs/assets/architecture.html",
+    "viewBox": [1180, 680],
+    "quality_profile": "showcase"
+  },
+  "stages": [
+    { "label": "Entrée" },
+    { "label": "Prétraitement" },
+    { "label": "Modèle" },
+    { "label": "Reconstruction" },
+    { "label": "Sortie" }
+  ],
+  "nodes": [
+    { "id": "input-gray", "type": "frontend", "label": "Image gris", "stage": 0, "row": 0 },
+    { "id": "lab", "type": "backend", "label": "Conversion CIELAB", "stage": 1, "row": 0 },
+    { "id": "l-channel", "type": "backend", "label": "Canal L", "stage": 2, "row": 0 },
+    { "id": "unet-cbam", "type": "backend", "label": "U-Net + CBAM", "stage": 2, "row": 2 },
+    { "id": "ab-channels", "type": "backend", "label": "Canaux a/b prédits", "stage": 3, "row": 2 },
+    { "id": "lab-recompose", "type": "backend", "label": "Recomposition Lab", "stage": 3, "row": 0 },
+    { "id": "output-rgb", "type": "frontend", "label": "Image RGB colorisée", "stage": 4, "row": 0 }
+  ],
+  "flows": [
+    { "from": "input-gray", "to": "lab", "label": "image" },
+    { "from": "lab", "to": "l-channel", "label": "luminance L" },
+    { "from": "l-channel", "to": "unet-cbam", "label": "entrée modèle", "variant": "emphasis", "labelDy": 24 },
+    { "from": "unet-cbam", "to": "ab-channels", "label": "chrominance a/b", "variant": "emphasis" },
+    { "from": "l-channel", "to": "lab-recompose", "label": "luminance L" },
+    { "from": "ab-channels", "to": "lab-recompose", "label": "chrominance a/b", "variant": "emphasis" },
+    { "from": "lab-recompose", "to": "output-rgb", "label": "conversion RGB", "variant": "emphasis" }
+  ]
+}
