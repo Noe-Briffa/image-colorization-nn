@@ -1,6 +1,7 @@
 # Generated from the validated Python 3.11 / RTX 3060 environment.
 # PyTorch wheels come from the CUDA 12.8 index; the remaining packages use PyPI.
 --extra-index-url https://download.pytorch.org/whl/cu128
+--index-strategy unsafe-best-match
 
 aiofiles==24.1.0
 annotated-doc==0.0.5
