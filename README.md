@@ -87,6 +87,16 @@ Les anciens CSV sont des mesures prises pendant entraînement. Ils ne remplacent
 
 La sélection de comparaisons entrée / prédiction / référence est disponible dans [`docs/PORTFOLIO_ASSETS.md`](docs/PORTFOLIO_ASSETS.md).
 
+## Vidéo portfolio
+
+La vidéo présente le projet comme un travail de Computer Vision : prétraitement en espace Lab, U-Net avec attention CBAM, inférence locale et évaluation indépendante sur 100 images avec la seed 42. Elle montre deux sorties choisies dans cette évaluation, les indices 32 et 95, sous forme de triptyques entrée / prédiction / référence, puis les métriques moyennes PSNR 23.2869, SSIM 0.9402 et DeltaE 14.8435.
+
+Le checkpoint portfolio reste un artefact historique entraîné avant la correction du chemin de gradient GAN/LPIPS ; cette correction prépare une future V2 et ne doit pas être présentée comme ayant modifié le modèle distribué.
+
+La limite présentée dans la vidéo est la suivante : plusieurs colorisations peuvent être plausibles pour une même image. Les images utilisées dans la vidéo et les visuels portfolio doivent être contrôlées avant diffusion publique afin de confirmer leurs droits de réutilisation.
+
+Le guide réutilisable pour préparer et contrôler les prochaines vidéos est disponible dans [`docs/VIDEO_GUIDELINES.md`](docs/VIDEO_GUIDELINES.md).
+
 ## Entraînement futur
 
 La V1 portfolio ne relance pas l'entraînement. La commande suivante prépare une V2 avec conversion Lab→RGB différentiable, checkpoints complets et reprise explicite :
