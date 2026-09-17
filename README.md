@@ -107,7 +107,7 @@ Pour reprendre : ajouter `--resume checkpoints\unet_colorization_42.pt`.
 
 ## Données et publication
 
-Datasets ImageNet, LMDB, checkpoints intermédiaires, environnements, sorties et vidéos restent hors Git. Les six comparaisons générées dans `artifacts/evaluation/` doivent être contrôlées avant publication ; seules les images dont les droits de diffusion sont établis peuvent être copiées dans les visuels portfolio.
+Datasets ImageNet, LMDB, checkpoints intermédiaires, environnements, sorties et vidéos restent hors Git. Les six comparaisons générées dans `artifacts/evaluation/` doivent être contrôlées avant publication, seules les images dont les droits de diffusion sont établis peuvent être copiées dans les visuels portfolio.
 
 ## Tests
 
