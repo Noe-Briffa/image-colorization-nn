@@ -6,7 +6,7 @@ Projet personnel de colorisation d'images noir et blanc. Un U-Net léger avec at
 
 ## Architecture
 
-![Pipeline de colorisation](https://raw.githubusercontent.com/Noe-Briffa/image-colorization-nn/master/docs/assets/architecture.svg)
+![Pipeline de colorisation](docs/assets/architecture.png)
 
 Le modèle travaille dans l’espace CIELAB. Il reçoit la luminance `L`, prédit les canaux chromatiques `a,b`, puis recombine ces informations pour produire une image RGB.
 
