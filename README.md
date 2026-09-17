@@ -27,12 +27,12 @@ Pré-requis : pilote NVIDIA récent, `uv`, environ 5 Go libres pour l'environnem
 uv python install 3.11
 uv venv .venv --python 3.11
 .\.venv\Scripts\Activate.ps1
-uv pip install -r requirements.txt
+uv pip install --index-strategy unsafe-best-match -r requirements.txt
 python check_environment.py --checkpoint checkpoints\unet_colorization_119.pt
 ```
 
 Pour reproduire exactement l'environnement validé, utiliser `requirements.lock.txt`
-à la place de `requirements.txt`.
+à la place de `requirements.txt`, avec le même paramètre `--index-strategy unsafe-best-match`.
 
 L'environnement validé utilise Python 3.11, PyTorch 2.7.0 et CUDA 12.8 sur une RTX 3060 Laptop 6 Go.
 

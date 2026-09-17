@@ -1,5 +1,4 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
---index-strategy unsafe-best-match
 
 torch==2.7.0+cu128
 torchvision==0.22.0+cu128
